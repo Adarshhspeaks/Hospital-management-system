@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+pgdata
+tests
+.git
+.gitignore
+README.md

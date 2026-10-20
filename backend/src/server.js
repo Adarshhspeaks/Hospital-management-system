@@ -10,7 +10,17 @@ if (!process.env.JWT_SECRET || !process.env.DATABASE_URL) {
 
 const app = express();
 app.use(helmet());
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }));
+const clientOrigin = process.env.CLIENT_ORIGIN;
+app.use(
+  cors({
+    origin: clientOrigin
+      ? clientOrigin === '*'
+        ? true
+        : clientOrigin.split(',').map((s) => s.trim())
+      : ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
