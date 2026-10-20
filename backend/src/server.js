@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 
 if (!process.env.JWT_SECRET || !process.env.DATABASE_URL) {
   console.error('Missing JWT_SECRET or DATABASE_URL. Copy .env.example to .env and fill it in.');
@@ -8,6 +9,7 @@ if (!process.env.JWT_SECRET || !process.env.DATABASE_URL) {
 }
 
 const app = express();
+app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json());
 

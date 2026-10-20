@@ -8,12 +8,14 @@
 const assert = require('assert');
 
 const BASE_URL = process.env.API_URL || 'http://localhost:5000/api';
+const TEST_RUN_IP = `test-ip-${Date.now()}`;
 
 async function req(path, opts = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...opts,
     headers: {
       'Content-Type': 'application/json',
+      'x-test-ip': opts.ip || TEST_RUN_IP,
       ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
       ...(opts.headers || {}),
     },
@@ -23,15 +25,15 @@ async function req(path, opts = {}) {
   const contentType = res.headers.get('content-type') || '';
   if (contentType.includes('application/pdf')) {
     const buffer = await res.arrayBuffer();
-    return { status: res.status, buffer, contentType };
+    return { status: res.status, buffer, contentType, headers: res.headers };
   }
   if (contentType.includes('text/csv')) {
     const text = await res.text();
-    return { status: res.status, text, contentType };
+    return { status: res.status, text, contentType, headers: res.headers };
   }
 
   const data = await res.json().catch(() => ({}));
-  return { status: res.status, data };
+  return { status: res.status, data, headers: res.headers };
 }
 
 let passed = 0;
@@ -91,6 +93,27 @@ async function runAllTests() {
     report('FR-1.1: Invalid credentials rejected with 401 Unauthorized', true);
   } catch (err) {
     report('FR-1.1: Invalid credentials rejected with 401 Unauthorized', false, err);
+  }
+
+  try {
+    // Correction 4: Helmet security headers and rate limiter on /api/auth/login
+    const probe = await req('/auth/login', { method: 'POST', body: { username: 'admin', password: 'wrongpassword' } });
+    assert(probe.headers.get('x-content-type-options') === 'nosniff' || probe.headers.get('x-dns-prefetch-control'), 'Helmet headers must be present');
+    const limitHeader = probe.headers.get('ratelimit-limit');
+    assert.strictEqual(limitHeader, '10', 'Login rate limit must be 10 attempts per 15 minutes');
+
+    // Test that the 11th attempt from a test IP is blocked with 429 Too Many Requests
+    const bruteIp = `brute-${Date.now()}`;
+    for (let i = 0; i < 10; i++) {
+      await req('/auth/login', { method: 'POST', ip: bruteIp, body: { username: 'admin', password: 'bad' } });
+    }
+    const blockedRes = await req('/auth/login', { method: 'POST', ip: bruteIp, body: { username: 'admin', password: 'bad' } });
+    assert.strictEqual(blockedRes.status, 429, '11th login attempt must be rejected with 429 Too Many Requests');
+    assert(blockedRes.data.error.includes('Too many login attempts'), 'Error message must specify rate limit');
+
+    report('Correction 4: Helmet security headers & login rate limiting (10 attempts/15min, 429 on 11th attempt) enforced', true);
+  } catch (err) {
+    report('Correction 4: Helmet security headers & login rate limiting enforced', false, err);
   }
 
   try {
@@ -204,7 +227,7 @@ async function runAllTests() {
     report('FR-3.1: Doctor profiles listed', false, err);
   }
 
-  let slotDate, targetSlot;
+  let slotDate, targetSlot, targetSlot2, targetSlot3;
   try {
     const d = new Date();
     d.setDate(d.getDate() + ((4 + 7 - d.getDay()) % 7 || 7)); // Next Thursday
@@ -217,8 +240,10 @@ async function runAllTests() {
     assert(slotsRes.data.slots.length > 0);
 
     const freeSlots = slotsRes.data.slots.filter((s) => s.available);
-    assert(freeSlots.length > 0, 'Must have at least one free slot');
+    assert(freeSlots.length >= 2, 'Must have at least two free slots');
     targetSlot = freeSlots[0].time;
+    targetSlot2 = freeSlots[1].time;
+    targetSlot3 = freeSlots[2] ? freeSlots[2].time : '12:30';
 
     report(`FR-3.2: 30-minute availability slots generated for ${slotDate} (${slotsRes.data.slots.length} slots)`, true);
   } catch (err) {
@@ -234,7 +259,7 @@ async function runAllTests() {
         availability: {
           days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
           start: '09:00',
-          end: '13:00',
+          end: '17:00',
         },
       },
     });
@@ -281,6 +306,53 @@ async function runAllTests() {
     report('FR-4.2: Double-booking prevention enforced via partial unique index (409 Conflict)', true);
   } catch (err) {
     report('FR-4.2: Double-booking prevention enforced', false, err);
+  }
+
+  try {
+    // Correction 1 & 2: Book secondary appointment to test status restrictions and billing gate
+    const appt2Res = await req('/appointments', {
+      method: 'POST',
+      token: recToken,
+      body: {
+        patient_id: testPatientId,
+        doctor_id: testDoctorId,
+        date: slotDate,
+        time_slot: targetSlot2,
+      },
+    });
+    assert.strictEqual(appt2Res.status, 201);
+    const appt2Id = appt2Res.data.appointment_id;
+
+    // 1. Attempt manual status = 'Completed' via doctor PATCH (must return 400)
+    const manualComp = await req(`/appointments/${appt2Id}/status`, {
+      method: 'PATCH',
+      token: docToken,
+      body: { status: 'Completed' },
+    });
+    assert.strictEqual(manualComp.status, 400);
+    assert(manualComp.data.error.includes('Appointments can become Completed only by conducting and saving a consultation'));
+
+    // 2. Attempt generating bill before completed (must return 400)
+    const prematureBill = await req('/bills', {
+      method: 'POST',
+      token: recToken,
+      body: { appointment_id: appt2Id, status: 'Pending' },
+    });
+    assert.strictEqual(prematureBill.status, 400);
+    assert(prematureBill.data.error.includes('once the appointment is Completed'));
+
+    // 3. Doctor marks as No-show (allowed)
+    const noShowRes = await req(`/appointments/${appt2Id}/status`, {
+      method: 'PATCH',
+      token: docToken,
+      body: { status: 'No-show' },
+    });
+    assert.strictEqual(noShowRes.status, 200);
+    assert.strictEqual(noShowRes.data.status, 'No-show');
+
+    report('Correction 1 & 2: Manual Completed rejected (400), uncompleted bill blocked (400), No-show allowed', true);
+  } catch (err) {
+    report('Correction 1 & 2: Manual Completed rejected, uncompleted bill blocked, No-show allowed', false, err);
   }
 
   // -------------------------------------------------------------
@@ -445,6 +517,114 @@ async function runAllTests() {
     report(`FR-6.4: Official PDF invoice generated and streamed successfully (${pdfRes.buffer.byteLength} bytes)`, true);
   } catch (err) {
     report('FR-6.4: Official PDF invoice generation', false, err);
+  }
+
+  try {
+    // Correction 2: While bill is Pending, recalculate medicine_charges from dispensed items on view/edit.
+    // Once marked Paid, lock all amounts.
+    // 1. Create a 3rd appointment and complete consultation with a prescription
+    const appt3Res = await req('/appointments', {
+      method: 'POST',
+      token: recToken,
+      body: {
+        patient_id: testPatientId,
+        doctor_id: testDoctorId,
+        date: slotDate,
+        time_slot: targetSlot3,
+      },
+    });
+    assert.strictEqual(appt3Res.status, 201);
+    const appt3Id = appt3Res.data.appointment_id;
+
+    const medList = await req('/medicines', { token: pharmToken });
+    const medItem = medList.data[0];
+
+    const consult3 = await req('/records', {
+      method: 'POST',
+      token: docToken,
+      body: {
+        appointment_id: appt3Id,
+        symptoms: 'Mild headache and seasonal cough',
+        diagnosis: 'Seasonal Rhinitis',
+        notes: 'Advised hydration.',
+        prescription: [
+          { medicine_id: medItem.medicine_id, dosage: '1 tab daily', duration: '2 days', quantity: 2 },
+        ],
+      },
+    });
+    assert.strictEqual(consult3.status, 201);
+    const pres3Id = consult3.data.prescription.prescription_id;
+
+    // 2. Generate bill with status 'Pending' BEFORE pharmacy dispenses medicine
+    const pendingBillRes = await req('/bills', {
+      method: 'POST',
+      token: recToken,
+      body: {
+        appointment_id: appt3Id,
+        other_charges: 15,
+        status: 'Pending',
+      },
+    });
+    assert.strictEqual(pendingBillRes.status, 201);
+    const pendingBillId = pendingBillRes.data.bill_id;
+    assert.strictEqual(pendingBillRes.data.status, 'Pending');
+    assert.strictEqual(Number(pendingBillRes.data.medicine_charges), 0, 'Medicine charges must be 0 before dispensing');
+
+    // 3. Pharmacy dispenses the prescription
+    const disp3 = await req(`/prescriptions/${pres3Id}/dispense`, {
+      method: 'POST',
+      token: pharmToken,
+    });
+    assert.strictEqual(disp3.status, 200);
+
+    // 4. View the bill (GET /bills/:id): should dynamically recalculate medicine_charges from dispensed items
+    const viewedBill = await req(`/bills/${pendingBillId}`, { token: recToken });
+    assert.strictEqual(viewedBill.status, 200);
+    const expectedMedTotal = 2 * Number(medItem.price);
+    assert.strictEqual(Number(viewedBill.data.medicine_charges), expectedMedTotal, 'Medicine charges should be recalculated on view');
+    const expectedTotal = Number(viewedBill.data.consultation_fee) + expectedMedTotal + 15;
+    assert.strictEqual(Number(viewedBill.data.total), expectedTotal, 'Total should equal consultation + medicine + other');
+
+    // 5. Edit the bill (PUT /bills/:id): update other_charges while Pending
+    const editedBill = await req(`/bills/${pendingBillId}`, {
+      method: 'PUT',
+      token: recToken,
+      body: { other_charges: 25 },
+    });
+    assert.strictEqual(editedBill.status, 200);
+    assert.strictEqual(Number(editedBill.data.other_charges), 25);
+    assert.strictEqual(Number(editedBill.data.medicine_charges), expectedMedTotal);
+    assert.strictEqual(Number(editedBill.data.total), Number(viewedBill.data.consultation_fee) + expectedMedTotal + 25);
+
+    // 6. Mark bill as Paid
+    const payRes = await req(`/bills/${pendingBillId}/pay`, {
+      method: 'PATCH',
+      token: recToken,
+      body: { payment_mode: 'card' },
+    });
+    assert.strictEqual(payRes.status, 200);
+    assert.strictEqual(payRes.data.status, 'Paid');
+
+    // 7. Verify amounts are locked: editing a Paid bill must be rejected with 400
+    const lockedEdit = await req(`/bills/${pendingBillId}`, {
+      method: 'PUT',
+      token: recToken,
+      body: { other_charges: 100 },
+    });
+    assert.strictEqual(lockedEdit.status, 400, 'Editing Paid bill must return 400');
+    assert(lockedEdit.data.error.includes('locked for Paid bills'));
+
+    // 8. Paying again must be rejected with 400
+    const lockedPay = await req(`/bills/${pendingBillId}/pay`, {
+      method: 'PATCH',
+      token: recToken,
+      body: { payment_mode: 'cash' },
+    });
+    assert.strictEqual(lockedPay.status, 400, 'Re-paying Paid bill must return 400');
+
+    report('Correction 2: Pending bill recalculates medicine_charges on view/edit; Paid bill locks all amounts', true);
+  } catch (err) {
+    report('Correction 2: Pending bill recalculates medicine_charges on view/edit; Paid bill locks all amounts', false, err);
   }
 
   // -------------------------------------------------------------

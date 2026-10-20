@@ -23,7 +23,7 @@ Authorization: Bearer <jwt_token>
 ## 1. Authentication & Staff Management
 
 ### `POST /api/auth/login`
-Authenticates a user account and returns a signed JWT.
+Authenticates a user account and returns a signed JWT. Rate limited to 10 attempts per 15 minutes per IP.
 - **Roles**: Public
 - **Request Body**:
   ```json
@@ -381,13 +381,26 @@ Generates a patient invoice. Enforces strictly one bill per appointment.
     "date": "2026-10-20"
   }
   ```
+- **Response `400 Bad Request`**: If the appointment has not reached `Completed` status.
 - **Response `409 Conflict`**: If a bill has already been created for this appointment.
 
+### `PUT /api/bills/:id`
+Edits `other_charges` while the bill status is `Pending`. Automatically recalculates `medicine_charges` and `total` from dispensed prescription items.
+- **Roles**: `receptionist`, `admin`
+- **Request Body**: `{ "other_charges": 60 }`
+- **Response `200 OK`**: Updated bill object.
+- **Response `400 Bad Request`**: If bill is already `Paid` (locked amounts).
+
 ### `PATCH /api/bills/:id/pay`
-Records payment for an outstanding pending bill.
+Records payment for an outstanding pending bill, performs final recalculation of medicine charges, and permanently locks all amounts.
 - **Roles**: `receptionist`, `admin`
 - **Request Body**: `{ "payment_mode": "cash" }`
-- **Response `200 OK`**: Updated bill object.
+- **Response `200 OK`**: Updated bill object with `status: "Paid"`.
+- **Response `400 Bad Request`**: If already `Paid`.
+
+### `GET /api/bills/:id`
+Retrieves detailed bill and itemized dispensed prescription lines. If status is `Pending`, dynamically recalculates medicine charges before responding.
+- **Roles**: Authenticated users
 
 ### `GET /api/bills/:id/pdf`
 Generates and downloads a formal hospital PDF invoice receipt.

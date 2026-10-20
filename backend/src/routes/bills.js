@@ -9,6 +9,50 @@ router.use(requireAuth);
 const VALID_PAYMENT_MODES = ['cash', 'card', 'upi'];
 const VALID_STATUSES = ['Pending', 'Paid'];
 
+// Recalculates medicine_charges from dispensed prescription items for pending bills (Correction 2)
+async function recalculatePendingBill(billId) {
+  const bRes = await db.query('SELECT * FROM bills WHERE bill_id = $1', [billId]);
+  if (!bRes.rows[0]) return null;
+  const bill = bRes.rows[0];
+  if (bill.status !== 'Pending') {
+    return bill; // Locked
+  }
+
+  const medRes = await db.query(
+    `SELECT COALESCE(SUM(pi.quantity * med.price), 0) AS med_total
+     FROM medical_records m
+     JOIN prescriptions pr ON pr.record_id = m.record_id
+     JOIN prescription_items pi ON pi.prescription_id = pr.prescription_id
+     JOIN medicines med ON med.medicine_id = pi.medicine_id
+     WHERE m.appointment_id = $1 AND pr.dispensed = TRUE`,
+    [bill.appointment_id]
+  );
+
+  const newMedCharges = Number(medRes.rows[0]?.med_total || 0);
+  const consultFee = Number(bill.consultation_fee || 0);
+  const otherCharges = Number(bill.other_charges || 0);
+  const newTotal = consultFee + newMedCharges + otherCharges;
+
+  if (Number(bill.medicine_charges) !== newMedCharges || Number(bill.total) !== newTotal) {
+    const updateRes = await db.query(
+      `UPDATE bills
+       SET medicine_charges = $1, total = $2
+       WHERE bill_id = $3 AND status = 'Pending'
+       RETURNING *`,
+      [newMedCharges, newTotal, billId]
+    );
+    return updateRes.rows[0] || bill;
+  }
+  return bill;
+}
+
+async function syncAllPendingBills() {
+  const { rows: pendingBills } = await db.query("SELECT bill_id FROM bills WHERE status = 'Pending'");
+  for (const b of pendingBills) {
+    await recalculatePendingBill(b.bill_id);
+  }
+}
+
 // GET /api/bills/preview/:appointment_id : preview breakdown before generating bill (FR-6.1)
 router.get('/preview/:appointment_id', requireRole('receptionist', 'admin'), async (req, res) => {
   const apptId = Number(req.params.appointment_id);
@@ -30,6 +74,11 @@ router.get('/preview/:appointment_id', requireRole('receptionist', 'admin'), asy
 
     if (!apptRes.rows[0]) return res.status(404).json({ error: 'Appointment not found.' });
     const appt = apptRes.rows[0];
+
+    // Correction 2: A bill can be generated only once the appointment is Completed
+    if (appt.appointment_status !== 'Completed') {
+      return res.status(400).json({ error: 'A bill can be generated only once the appointment is Completed.' });
+    }
 
     // 2. Check if already billed
     const billRes = await db.query('SELECT bill_id, status, total, payment_mode FROM bills WHERE appointment_id = $1', [apptId]);
@@ -96,8 +145,8 @@ router.get('/unbilled', requireRole('receptionist', 'admin'), async (req, res) =
        JOIN doctors d ON d.doctor_id = a.doctor_id
        JOIN users u ON u.user_id = d.user_id
        LEFT JOIN bills b ON b.appointment_id = a.appointment_id
-       WHERE b.bill_id IS NULL AND a.status IN ('Completed', 'Scheduled')
-       ORDER BY (a.status = 'Completed') DESC, a.date DESC, a.time_slot DESC`
+       WHERE b.bill_id IS NULL AND a.status = 'Completed'
+       ORDER BY a.date DESC, a.time_slot DESC`
     );
     res.json(rows.map((r) => ({
       ...r,
@@ -114,6 +163,9 @@ router.get('/', requireRole('receptionist', 'admin'), async (req, res) => {
   const { status, patient_id, date, q } = req.query || {};
 
   try {
+    // Recalculate medicine_charges from dispensed items for any pending bills
+    await syncAllPendingBills();
+
     let query = `
       SELECT b.bill_id, b.patient_id, b.appointment_id,
              b.consultation_fee, b.medicine_charges, b.other_charges, b.total,
@@ -178,6 +230,9 @@ router.get('/patient/:patient_id', requireRole('receptionist', 'admin', 'doctor'
     const patCheck = await db.query('SELECT patient_id, name FROM patients WHERE patient_id = $1', [patientId]);
     if (!patCheck.rows[0]) return res.status(404).json({ error: 'Patient not found.' });
 
+    // Recalculate medicine_charges from dispensed items for any pending bills
+    await syncAllPendingBills();
+
     const { rows } = await db.query(
       `SELECT b.bill_id, b.patient_id, b.appointment_id,
               b.consultation_fee, b.medicine_charges, b.other_charges, b.total,
@@ -233,7 +288,7 @@ router.post('/', requireRole('receptionist', 'admin'), async (req, res) => {
   try {
     // 1. Fetch appointment details
     const apptRes = await db.query(
-      `SELECT a.appointment_id, a.patient_id, a.doctor_id, d.fee AS doctor_fee
+      `SELECT a.appointment_id, a.patient_id, a.doctor_id, a.status, d.fee AS doctor_fee
        FROM appointments a
        JOIN doctors d ON d.doctor_id = a.doctor_id
        WHERE a.appointment_id = $1`,
@@ -242,6 +297,12 @@ router.post('/', requireRole('receptionist', 'admin'), async (req, res) => {
     if (!apptRes.rows[0]) return res.status(404).json({ error: 'Appointment not found.' });
 
     const appt = apptRes.rows[0];
+
+    // Correction 2: A bill can be generated only once the appointment is Completed
+    if (appt.status !== 'Completed') {
+      return res.status(400).json({ error: 'A bill can be generated only once the appointment is Completed.' });
+    }
+
     const consultationFee = Number(appt.doctor_fee || 0);
 
     // 2. Calculate medicine charges from dispensed prescription items
@@ -306,9 +367,13 @@ router.patch('/:id/pay', requireRole('receptionist', 'admin'), async (req, res) 
     const existing = await db.query('SELECT bill_id, status FROM bills WHERE bill_id = $1', [id]);
     if (!existing.rows[0]) return res.status(404).json({ error: 'Bill not found.' });
 
+    // Once marked Paid, lock all amounts
     if (existing.rows[0].status === 'Paid') {
-      return res.status(400).json({ error: 'This bill has already been marked as Paid.' });
+      return res.status(400).json({ error: 'This bill has already been marked as Paid and amounts are locked.' });
     }
+
+    // Recalculate medicine_charges one final time before locking
+    await recalculatePendingBill(id);
 
     const { rows } = await db.query(
       `UPDATE bills
@@ -331,12 +396,84 @@ router.patch('/:id/pay', requireRole('receptionist', 'admin'), async (req, res) 
   }
 });
 
+// PUT /api/bills/:id : edit a bill while Pending (FR-6.1 / Correction 2)
+// Once marked Paid, all amounts are locked.
+router.put('/:id', requireRole('receptionist', 'admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(404).json({ error: 'Bill not found.' });
+
+  try {
+    const existing = await db.query('SELECT * FROM bills WHERE bill_id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Bill not found.' });
+    const bill = existing.rows[0];
+
+    // Correction 2: Once marked Paid, lock all amounts
+    if (bill.status === 'Paid') {
+      return res.status(400).json({ error: 'Amounts are locked for Paid bills and cannot be edited.' });
+    }
+
+    const { other_charges, status, payment_mode } = req.body || {};
+    let otherNum = Number(bill.other_charges || 0);
+    if (other_charges !== undefined) {
+      otherNum = Number(other_charges);
+      if (isNaN(otherNum) || otherNum < 0) {
+        return res.status(400).json({ error: 'Other charges must be 0 or a positive number.' });
+      }
+    }
+
+    // Recalculate medicine_charges from dispensed items
+    const medRes = await db.query(
+      `SELECT COALESCE(SUM(pi.quantity * med.price), 0) AS med_total
+       FROM medical_records m
+       JOIN prescriptions pr ON pr.record_id = m.record_id
+       JOIN prescription_items pi ON pi.prescription_id = pr.prescription_id
+       JOIN medicines med ON med.medicine_id = pi.medicine_id
+       WHERE m.appointment_id = $1 AND pr.dispensed = TRUE`,
+      [bill.appointment_id]
+    );
+    const newMedCharges = Number(medRes.rows[0]?.med_total || 0);
+    const consultFee = Number(bill.consultation_fee || 0);
+    const newTotal = consultFee + newMedCharges + otherNum;
+
+    const newStatus = status && VALID_STATUSES.includes(status) ? status : bill.status;
+    let newPaymentMode = bill.payment_mode;
+    if (newStatus === 'Paid') {
+      newPaymentMode = payment_mode || bill.payment_mode;
+      if (!newPaymentMode || !VALID_PAYMENT_MODES.includes(newPaymentMode)) {
+        return res.status(400).json({ error: 'Choose a valid payment mode (cash, card, or upi) for Paid bills.' });
+      }
+    }
+
+    const { rows } = await db.query(
+      `UPDATE bills
+       SET other_charges = $1, medicine_charges = $2, total = $3, status = $4, payment_mode = $5
+       WHERE bill_id = $6
+       RETURNING *`,
+      [otherNum, newMedCharges, newTotal, newStatus, newStatus === 'Paid' ? newPaymentMode : null, id]
+    );
+
+    res.json({
+      ...rows[0],
+      consultation_fee: Number(rows[0].consultation_fee),
+      medicine_charges: Number(rows[0].medicine_charges),
+      other_charges: Number(rows[0].other_charges),
+      total: Number(rows[0].total),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not update bill.' });
+  }
+});
+
 // GET /api/bills/:id : get bill details with breakdown
 router.get('/:id', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(404).json({ error: 'Bill not found.' });
 
   try {
+    // Recalculate medicine_charges from dispensed items if bill is Pending
+    await recalculatePendingBill(id);
+
     const { rows } = await db.query(
       `SELECT b.bill_id, b.patient_id, b.appointment_id,
               b.consultation_fee, b.medicine_charges, b.other_charges, b.total,
@@ -393,6 +530,9 @@ router.get('/:id/pdf', async (req, res) => {
   if (!Number.isInteger(id)) return res.status(404).json({ error: 'Bill not found.' });
 
   try {
+    // Recalculate medicine_charges from dispensed items if bill is Pending
+    await recalculatePendingBill(id);
+
     const { rows } = await db.query(
       `SELECT b.bill_id, b.patient_id, b.appointment_id,
               b.consultation_fee, b.medicine_charges, b.other_charges, b.total,

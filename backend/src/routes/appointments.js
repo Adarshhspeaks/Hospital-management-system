@@ -280,8 +280,9 @@ router.patch('/:id/cancel', requireRole('receptionist'), async (req, res) => {
 });
 
 // PATCH /api/appointments/:id/status : change appointment status
+// - Appointments can become Completed ONLY by saving a consultation (step 5)
 // - Receptionist can mark Cancelled or No-show
-// - Doctor can mark Completed or No-show for their own appointments
+// - Doctor can mark No-show for their own appointments
 // - Only Scheduled appointments can change status
 router.patch('/:id/status', requireRole('receptionist', 'doctor'), async (req, res) => {
   const id = Number(req.params.id);
@@ -289,7 +290,13 @@ router.patch('/:id/status', requireRole('receptionist', 'doctor'), async (req, r
 
   const { status } = req.body || {};
   if (!status || !ALLOWED_STATUSES.includes(status)) {
-    return res.status(400).json({ error: 'Provide a valid status (Completed, Cancelled, or No-show).' });
+    return res.status(400).json({ error: 'Provide a valid status (Cancelled or No-show).' });
+  }
+
+  if (status === 'Completed') {
+    return res.status(400).json({
+      error: 'Appointments can become Completed only by conducting and saving a consultation.',
+    });
   }
 
   try {
@@ -314,8 +321,8 @@ router.patch('/:id/status', requireRole('receptionist', 'doctor'), async (req, r
       if (appt.doctor_user_id !== req.user.id) {
         return res.status(403).json({ error: 'You can only update your own appointments.' });
       }
-      if (!['Completed', 'No-show'].includes(status)) {
-        return res.status(400).json({ error: 'Doctors can only mark appointments as Completed or No-show.' });
+      if (status !== 'No-show') {
+        return res.status(400).json({ error: 'Doctors can only mark appointments as No-show. Completed status is set by saving a consultation.' });
       }
     } else if (req.user.role === 'receptionist') {
       if (!['Cancelled', 'No-show'].includes(status)) {

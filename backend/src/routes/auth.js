@@ -1,13 +1,25 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Rate limiter for login: 10 attempts per 15 minutes per IP (Correction 4)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: false,
+  keyGenerator: (req) => req.headers['x-forwarded-for'] || req.headers['x-test-ip'] || req.ip,
+  message: { error: 'Too many login attempts. Please try again after 15 minutes.' },
+});
+
 // POST /api/auth/login  (FR-1.1)
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ error: 'Enter your username and password.' });
