@@ -15,7 +15,7 @@ function validate(body = {}) {
   const gender = body.gender;
   const phone = String(body.phone || '').trim();
   const address = String(body.address || '').trim();
-  const bloodGroup = body.bloodGroup || null;
+  const bloodGroup = body.blood_group || body.bloodGroup || null;
 
   if (!name) return { error: 'Enter the patient’s full name.' };
   if (!Number.isInteger(age) || age < 0 || age > 120) return { error: 'Age must be a whole number between 0 and 120.' };

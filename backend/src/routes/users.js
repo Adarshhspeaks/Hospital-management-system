@@ -70,4 +70,40 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
+// PUT /api/users/:id : admin edits staff name, role, and optional password reset (FR-1.4)
+router.put('/:id', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId)) return res.status(404).json({ error: 'Account not found.' });
+
+  const { name, role, password } = req.body || {};
+  if (!name || !role) {
+    return res.status(400).json({ error: 'Name and role are required.' });
+  }
+  if (!ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Choose a valid role.' });
+  }
+
+  try {
+    let query, params;
+    if (password && String(password).trim().length > 0) {
+      if (String(password).length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      }
+      const hash = await bcrypt.hash(password, 10);
+      query = 'UPDATE users SET name = $1, role = $2, password_hash = $3 WHERE user_id = $4 RETURNING user_id, name, username, role, status';
+      params = [name.trim(), role, hash, userId];
+    } else {
+      query = 'UPDATE users SET name = $1, role = $2 WHERE user_id = $3 RETURNING user_id, name, username, role, status';
+      params = [name.trim(), role, userId];
+    }
+
+    const { rows } = await db.query(query, params);
+    if (!rows[0]) return res.status(404).json({ error: 'Account not found.' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not update the account.' });
+  }
+});
+
 module.exports = router;

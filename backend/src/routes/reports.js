@@ -24,6 +24,26 @@ function isValidDate(str) {
   return typeof str === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(str);
 }
 
+function resolvePeriodDates(from_date, to_date, period) {
+  if (from_date && to_date) return { from_date, to_date };
+  const d = new Date();
+  const today = d.toISOString().slice(0, 10);
+  if (period === 'daily') {
+    return { from_date: today, to_date: today };
+  }
+  if (period === 'weekly') {
+    const w = new Date();
+    w.setDate(w.getDate() - 7);
+    return { from_date: w.toISOString().slice(0, 10), to_date: today };
+  }
+  if (period === 'monthly') {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    return { from_date: `${y}-${m}-01`, to_date: today };
+  }
+  return { from_date, to_date };
+}
+
 // -------------------------------------------------------------
 // GET /api/reports/dashboard : role-appropriate KPI metrics (FR-8.1)
 // -------------------------------------------------------------
@@ -245,7 +265,10 @@ router.get('/dashboard', async (req, res) => {
 // GET /api/reports/appointments : appointments analytics (FR-8.2)
 // -------------------------------------------------------------
 router.get('/appointments', requireRole('admin', 'receptionist'), async (req, res) => {
-  const { from_date, to_date, doctor_id, status } = req.query || {};
+  let { from_date, to_date, period, doctor_id, status } = req.query || {};
+  const dates = resolvePeriodDates(from_date, to_date, period);
+  from_date = dates.from_date;
+  to_date = dates.to_date;
 
   try {
     let whereClause = ' WHERE 1=1';
@@ -445,10 +468,13 @@ router.get('/appointments/csv', requireRole('admin', 'receptionist'), async (req
 });
 
 // -------------------------------------------------------------
-// GET /api/reports/revenue : revenue analytics (FR-8.3)
+// GET /api/reports/revenue : revenue analytics (FR-8.2)
 // -------------------------------------------------------------
 router.get('/revenue', requireRole('admin', 'receptionist'), async (req, res) => {
-  const { from_date, to_date, payment_mode } = req.query || {};
+  let { from_date, to_date, period, payment_mode } = req.query || {};
+  const dates = resolvePeriodDates(from_date, to_date, period);
+  from_date = dates.from_date;
+  to_date = dates.to_date;
 
   try {
     let whereClause = ' WHERE 1=1';

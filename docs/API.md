@@ -2,29 +2,31 @@
 
 Base URL: `http://localhost:5000/api`
 
-All endpoints return JSON responses with standard HTTP status codes:
-- `200 OK` / `201 Created` on success.
+All API endpoints return JSON responses with standard HTTP status codes:
+- `200 OK` / `201 Created`: Request succeeded.
 - `400 Bad Request`: Validation failure (`{ "error": "plain-English description" }`).
-- `401 Unauthorized`: Missing or invalid JWT token.
+- `401 Unauthorized`: Missing, expired, or invalid JWT token.
 - `403 Forbidden`: Insufficient role permissions.
 - `404 Not Found`: Entity does not exist.
-- `409 Conflict`: Business logic or uniqueness conflict (e.g. double booking, duplicate bill).
+- `409 Conflict`: Business logic or constraint conflict (e.g. double booking, duplicate bill).
+- `429 Too Many Requests`: Rate limit threshold exceeded.
 
 ---
 
 ## Authentication Header
-Protected endpoints require an `Authorization` header with a signed JSON Web Token (JWT):
+
+Protected endpoints require an `Authorization` header containing a signed JSON Web Token (JWT):
 ```http
 Authorization: Bearer <jwt_token>
 ```
 
 ---
 
-## 1. Authentication & Staff Management
+## 1. Authentication & Staff Management (FR-1.1 – FR-1.5)
 
 ### `POST /api/auth/login`
-Authenticates a user account and returns a signed JWT. Rate limited to 10 attempts per 15 minutes per IP.
-- **Roles**: Public
+- **SRS Requirement**: **FR-1.1**, **FR-1.2**, **FR-1.5**
+- **Roles**: Public (Rate limited to 10 attempts per 15 minutes per IP)
 - **Request Body**:
   ```json
   {
@@ -45,13 +47,18 @@ Authenticates a user account and returns a signed JWT. Rate limited to 10 attemp
   }
   ```
 
+### `GET /api/auth/me`
+- **SRS Requirement**: **FR-1.5**
+- **Roles**: Authenticated users (`admin`, `doctor`, `receptionist`, `pharmacist`)
+- **Response `200 OK`**: User profile decoded from JWT.
+
 ### `GET /api/users`
-Lists all hospital staff accounts.
+- **SRS Requirement**: **FR-1.3**, **FR-1.4**
 - **Roles**: `admin`
-- **Response `200 OK`**: Array of user objects (`user_id`, `name`, `username`, `role`, `status`, `created_at`).
+- **Response `200 OK`**: Array of staff user objects (`user_id`, `name`, `username`, `role`, `status`, `created_at`).
 
 ### `POST /api/users`
-Creates a new staff user account.
+- **SRS Requirement**: **FR-1.4**
 - **Roles**: `admin`
 - **Request Body**:
   ```json
@@ -62,153 +69,148 @@ Creates a new staff user account.
     "role": "receptionist"
   }
   ```
-- **Response `201 Created`**: User object.
+- **Response `201 Created`**: Newly created user object.
+
+### `PUT /api/users/:id`
+- **SRS Requirement**: **FR-1.4**
+- **Roles**: `admin`
+- **Description**: Allows admin to update staff member's name and role, and optionally reset their password. (Account deletion is prohibited to preserve audit trail).
+- **Request Body**:
+  ```json
+  {
+    "name": "Sarah Connor-Reese",
+    "role": "receptionist",
+    "password": "newSecurePassword123"
+  }
+  ```
+- **Response `200 OK`**: Updated user object without password hash.
 
 ### `PATCH /api/users/:id/status`
-Activates or deactivates a staff account.
+- **SRS Requirement**: **FR-1.4**
 - **Roles**: `admin`
 - **Request Body**: `{ "status": "inactive" }` or `{ "status": "active" }`
 - **Response `200 OK`**: Updated user object.
 
 ---
 
-## 2. Patient Management
-
-### `GET /api/patients`
-Searches or lists patients.
-- **Roles**: `admin`, `receptionist`, `doctor`
-- **Query Parameters**:
-  - `q` (optional): Name, phone, or ID substring filter.
-- **Response `200 OK`**: Array of patient objects.
-
-### `GET /api/patients/:id`
-Retrieves patient profile and visit history.
-- **Roles**: `admin`, `receptionist`, `doctor`
-- **Response `200 OK`**:
-  ```json
-  {
-    "patient": {
-      "patient_id": 1,
-      "name": "Ramesh Patel",
-      "age": 42,
-      "gender": "Male",
-      "phone": "9876543210",
-      "address": "12 Gandhi Road, Mumbai",
-      "blood_group": "O+"
-    },
-    "visits": [
-      {
-        "appointment_id": 12,
-        "date": "2026-10-22",
-        "time_slot": "10:00",
-        "status": "Completed",
-        "doctor_name": "Dr. Demo",
-        "specialization": "General Medicine",
-        "diagnosis": "Acute Pharyngitis"
-      }
-    ]
-  }
-  ```
-  *(Note: `diagnosis` is masked as `null` for receptionist/admin and visible to doctors).*
+## 2. Patient Registration & Management (FR-2.1 – FR-2.5)
 
 ### `POST /api/patients`
-Registers a new patient.
-- **Roles**: `receptionist`, `admin`
+- **SRS Requirement**: **FR-2.1**, **FR-2.2**
+- **Roles**: `receptionist`
 - **Request Body**:
   ```json
   {
-    "name": "Priya Nair",
-    "age": 28,
-    "gender": "Female",
+    "name": "Aarav Sharma",
+    "age": 34,
+    "gender": "Male",
     "phone": "9812345678",
-    "address": "B-402 Lakeview, Bangalore",
-    "blood_group": "A+"
+    "address": "42 Marine Drive, Mumbai",
+    "blood_group": "B+"
   }
   ```
-- **Response `201 Created`**: Patient object with `patient_id`.
+- **Response `201 Created`**: Patient object containing auto-generated `patient_id`.
+
+### `GET /api/patients`
+- **SRS Requirement**: **FR-2.3**
+- **Roles**: `receptionist`, `doctor`, `admin`
+- **Query Parameters**:
+  - `q` (optional): Patient ID integer, formatted code (`P-0012`), name substring, or phone digits.
+- **Response `200 OK`**: Array of matching patient objects.
+
+### `GET /api/patients/:id`
+- **SRS Requirement**: **FR-2.5**, **FR-5.4**
+- **Roles**: `receptionist`, `doctor`, `admin`
+- **Response `200 OK`**: Patient profile object including a `visits` array. Diagnoses are unmasked for doctors and masked as `null` for receptionists.
 
 ### `PUT /api/patients/:id`
-Updates patient demographic details.
-- **Roles**: `receptionist`, `admin`
+- **SRS Requirement**: **FR-2.4**
+- **Roles**: `receptionist`
+- **Request Body**: Demographic fields (`name`, `age`, `gender`, `phone`, `address`, `blood_group`).
 - **Response `200 OK`**: Updated patient object.
 
 ---
 
-## 3. Doctors & Availability
+## 3. Doctor Profiles & Scheduling (FR-3.1 – FR-3.3)
 
 ### `GET /api/doctors`
-Lists active doctors with consultation fees and availability.
-- **Roles**: `admin`, `receptionist`, `doctor`
+- **SRS Requirement**: **FR-3.1**, **FR-3.3**
+- **Roles**: All authenticated roles
 - **Query Parameters**:
-  - `specialization` (optional): Filter by specialty string.
-- **Response `200 OK`**: Array of doctor objects.
+  - `specialization` (optional): Filter doctors by specialty (e.g. `General Medicine`).
+- **Response `200 OK`**: Array of doctor profiles with user name, contact, qualification, and fee.
+
+### `GET /api/doctors/:id`
+- **SRS Requirement**: **FR-3.1**
+- **Roles**: All authenticated roles
+- **Response `200 OK`**: Specific doctor profile and weekly schedule configuration.
+
+### `PUT /api/doctors/:id`
+- **SRS Requirement**: **FR-3.1**, **FR-3.2**
+- **Roles**: `admin` or the owning `doctor`
+- **Request Body**:
+  ```json
+  {
+    "specialization": "Cardiology",
+    "qualification": "MBBS, MD, DM",
+    "fee": 800,
+    "availability": {
+      "days": ["Mon", "Wed", "Fri"],
+      "start": "09:00",
+      "end": "14:00"
+    }
+  }
+  ```
+- **Response `200 OK`**: Updated doctor profile.
 
 ### `GET /api/doctors/:id/slots`
-Generates half-hour appointment slots for a specific date.
-- **Roles**: `admin`, `receptionist`, `doctor`
+- **SRS Requirement**: **FR-3.2**, **FR-3.3**
+- **Roles**: All authenticated roles
 - **Query Parameters**:
-  - `date` (required): `YYYY-MM-DD`
+  - `date` (required, `YYYY-MM-DD`): The target appointment date.
 - **Response `200 OK`**:
   ```json
   {
+    "doctor_id": 1,
     "date": "2026-10-22",
-    "weekday": "Thu",
-    "working": true,
+    "is_working_day": true,
     "slots": [
-      { "time": "09:00", "booked": false, "past": false, "available": true },
-      { "time": "09:30", "booked": true, "past": false, "available": false }
+      { "time": "09:00", "available": true },
+      { "time": "09:30", "available": false }
     ]
   }
   ```
 
-### `PUT /api/doctors/:id`
-Updates doctor fee, qualification, specialization, or weekly schedule.
-- **Roles**: `admin`, or doctor updating own profile
-- **Request Body**:
-  ```json
-  {
-    "fee": 550.00,
-    "availability": {
-      "days": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-      "start": "09:00",
-      "end": "13:30"
-    }
-  }
-  ```
-- **Response `200 OK`**: Updated doctor object.
-
 ---
 
-## 4. Appointments & Scheduling
+## 4. Appointments & Conflict Management (FR-4.1 – FR-4.5)
 
 ### `GET /api/appointments`
-Lists appointments with multi-criteria filtering.
-- **Roles**: `admin`, `receptionist`, `doctor` (doctors automatically filtered to own appointments)
+- **SRS Requirement**: **FR-4.4**
+- **Roles**: `receptionist`, `doctor`, `admin`
 - **Query Parameters**:
-  - `date` (optional): `YYYY-MM-DD`
-  - `doctor_id` (optional): Number
-  - `patient_id` (optional): Number
-  - `status` (optional): `Scheduled`, `Completed`, `Cancelled`, `No-show`
-- **Response `200 OK`**: Array of appointment objects.
+  - `doctor_id` (optional): Doctor's ID (used by doctors to see daily schedule).
+  - `date` (optional, `YYYY-MM-DD`): Selected calendar date.
+  - `status` (optional): Filter by `Scheduled`, `Completed`, `Cancelled`, `No-show`.
+- **Response `200 OK`**: Array of appointments with patient, doctor, and status metadata.
 
 ### `POST /api/appointments`
-Books an appointment.
-- **Roles**: `receptionist`, `admin`
+- **SRS Requirement**: **FR-4.1**, **FR-4.2**
+- **Roles**: `receptionist`
 - **Request Body**:
   ```json
   {
     "patient_id": 1,
-    "doctor_id": 1,
+    "doctor_id": 2,
     "date": "2026-10-22",
     "time_slot": "10:30"
   }
   ```
-- **Response `201 Created`**: Appointment object with status `Scheduled`.
-- **Response `409 Conflict`**: If doctor already has an active appointment in this slot.
+- **Response `201 Created`**: Created appointment record. Returns `409 Conflict` if slot is already occupied.
 
-### `PATCH /api/appointments/:id/reschedule`
-Reschedules an appointment to a new date and time slot.
-- **Roles**: `receptionist`, `admin`
+### `PUT /api/appointments/:id`
+- **SRS Requirement**: **FR-4.3**
+- **Roles**: `receptionist`
 - **Request Body**:
   ```json
   {
@@ -216,228 +218,265 @@ Reschedules an appointment to a new date and time slot.
     "time_slot": "11:00"
   }
   ```
-- **Response `200 OK`**: Updated appointment.
+- **Response `200 OK`**: Rescheduled appointment record.
 
 ### `PATCH /api/appointments/:id/cancel`
-Cancels an appointment, freeing the slot for other patients.
-- **Roles**: `receptionist`, `admin`
-- **Response `200 OK`**: Appointment marked `Cancelled`.
+- **SRS Requirement**: **FR-4.3**
+- **Roles**: `receptionist`
+- **Response `200 OK`**: Updated appointment with `status = "Cancelled"`.
 
 ### `PATCH /api/appointments/:id/status`
-Updates status to `Completed` or `No-show`.
-- **Roles**: `doctor`, `receptionist`, `admin`
+- **SRS Requirement**: **FR-4.5**
+- **Roles**: `doctor`
+- **Description**: Allows doctor to mark `No-show`. Manual transitions to `Completed` return `400 Bad Request` (completed status is strictly reserved for consultation submission).
 - **Request Body**: `{ "status": "No-show" }`
+- **Response `200 OK`**: Updated appointment object.
 
 ---
 
-## 5. Consultations & Medical Records
+## 5. Clinical Consultations & Privacy (FR-5.1 – FR-5.4)
 
 ### `POST /api/records`
-Records symptoms, diagnosis, clinical notes, itemized prescription, and marks the appointment `Completed` in ONE atomic transaction.
+- **SRS Requirement**: **FR-5.1**, **FR-5.2**, **FR-4.5**
 - **Roles**: `doctor`
+- **Description**: Records clinical consultation and writes electronic prescription in an atomic transaction. Transitions the corresponding appointment to `Completed`.
 - **Request Body**:
   ```json
   {
-    "appointment_id": 12,
-    "symptoms": "High fever, chills, persistent dry cough",
-    "diagnosis": "Upper Respiratory Tract Infection",
-    "notes": "Hydration, vit-C, follow up after 5 days if fever persists.",
+    "appointment_id": 5,
+    "symptoms": "High fever, cough",
+    "diagnosis": "Viral Bronchitis",
+    "notes": "Drink warm liquids and rest.",
     "prescription": [
       {
         "medicine_id": 1,
         "dosage": "1 tab TDS",
-        "duration": "3 days",
-        "quantity": 6
-      },
-      {
-        "medicine_id": 2,
-        "dosage": "1 cap BD",
         "duration": "5 days",
-        "quantity": 10
+        "quantity": 15
       }
     ]
   }
   ```
-- **Response `201 Created`**:
-  ```json
-  {
-    "record": { "record_id": 4, "appointment_id": 12, "diagnosis": "..." },
-    "prescription": { "prescription_id": 4, "dispensed": false, "items": [...] },
-    "appointment_status": "Completed"
-  }
-  ```
-- **Response `400 Bad Request`**: If already consulted or invalid medicine IDs.
+- **Response `201 Created`**: Object containing saved `record`, `prescription`, and updated `appointment_status: "Completed"`.
 
-### `GET /api/records/appointment/:appointment_id`
-Retrieves medical record and prescription details for an appointment.
-- **Roles**: `doctor`
+### `GET /api/records/patient/:patient_id`
+- **SRS Requirement**: **FR-5.3**, **FR-5.4**
+- **Roles**: `doctor` (Receptionists and pharmacists receive `403 Forbidden`)
+- **Response `200 OK`**: Array of chronological medical records with symptoms, diagnoses, doctor notes, and prescriptions.
 
 ---
 
-## 6. Pharmacy Inventory & Dispensing
+## 6. Pharmacy Inventory & Atomic Dispensing (FR-7.1 – FR-7.4)
 
 ### `GET /api/medicines`
-Lists medicines in inventory.
-- **Roles**: `pharmacist`, `doctor`, `admin`, `receptionist`
-- **Query Parameters**:
-  - `status`: `low_stock`, `expired`, `near_expiry`
-  - `q`: Search medicine name
-- **Response `200 OK`**: Array of medicine items.
+- **SRS Requirement**: **FR-7.1**, **FR-7.3**
+- **Roles**: `pharmacist`, `doctor`, `admin`
+- **Response `200 OK`**: List of all medicines, unit prices, available stock, expiry dates, and threshold alerts.
+
+### `POST /api/medicines`
+- **SRS Requirement**: **FR-7.1**
+- **Roles**: `pharmacist`
+- **Request Body**:
+  ```json
+  {
+    "name": "Amoxicillin 500mg",
+    "quantity": 100,
+    "price": 12.50,
+    "expiry_date": "2027-06-30",
+    "threshold": 20
+  }
+  ```
+- **Response `201 Created`**: Inserted medicine record.
+
+### `PUT /api/medicines/:id`
+- **SRS Requirement**: **FR-7.1**
+- **Roles**: `pharmacist`
+- **Request Body**: Updated fields (`name`, `quantity`, `price`, `expiry_date`, `threshold`).
+- **Response `200 OK`**: Updated medicine record.
+
+### `DELETE /api/medicines/:id`
+- **SRS Requirement**: **FR-7.1**
+- **Roles**: `pharmacist`
+- **Response `200 OK`**: Confirmation message. Only unreferenced medicines may be deleted.
 
 ### `GET /api/medicines/alerts`
-Returns inventory summary counts.
-- **Roles**: `pharmacist`, `doctor`, `admin`
+- **SRS Requirement**: **FR-7.3**
+- **Roles**: `pharmacist`, `admin`
 - **Response `200 OK`**:
   ```json
   {
-    "total": 15,
-    "low_stock": 3,
-    "expired": 1,
+    "total": 4,
+    "low_stock": 2,
+    "expired": 0,
     "near_expiry": 2
   }
   ```
 
-### `POST /api/medicines`
-Adds a medicine to inventory.
-- **Roles**: `pharmacist`
-- **Request Body**:
-  ```json
-  {
-    "name": "Azithromycin 250mg",
-    "quantity": 100,
-    "price": 75.00,
-    "expiry_date": "2027-06-30",
-    "threshold": 15
-  }
-  ```
-- **Response `201 Created`**: Medicine object.
-
 ### `GET /api/prescriptions`
-Queue of prescriptions awaiting dispensing.
-- **Roles**: `pharmacist`, `admin`
+- **SRS Requirement**: **FR-7.4**
+- **Roles**: `pharmacist`
 - **Query Parameters**:
-  - `dispensed`: `false` (default) or `true`
-- **Response `200 OK`**: Prescriptions with itemized medicines and available stock check.
+  - `status` (optional): `pending` or `dispensed`.
+- **Response `200 OK`**: List of prescriptions with patient details, doctor name, and line items.
 
 ### `POST /api/prescriptions/:id/dispense`
-Dispenses prescription in an atomic transaction: row-locks inventory, validates stock, decrements quantities, and sets `dispensed = TRUE`.
+- **SRS Requirement**: **FR-7.2**, **FR-7.4**
 - **Roles**: `pharmacist`
-- **Response `200 OK`**:
-  ```json
-  {
-    "message": "Prescription dispensed successfully and medicine stock updated.",
-    "prescription": { "prescription_id": 4, "dispensed": true }
-  }
-  ```
-- **Response `400 Bad Request`**: If stock is insufficient or already dispensed.
+- **Description**: Atomically deducts inventory stock using row-level locking (`SELECT ... FOR UPDATE`) and marks the prescription as dispensed.
+- **Response `200 OK`**: Dispensation receipt and updated prescription.
 
 ---
 
-## 7. Patient Billing & Invoicing
-
-### `GET /api/bills/unbilled`
-Lists appointments ready for billing (completed consultations without an invoice).
-- **Roles**: `receptionist`, `admin`
+## 7. Billing & Financial Invoicing (FR-6.1 – FR-6.4)
 
 ### `GET /api/bills/preview/:appointment_id`
-Auto-calculates doctor consultation fee and sum of dispensed prescription medicines.
+- **SRS Requirement**: **FR-6.1**
 - **Roles**: `receptionist`, `admin`
-- **Response `200 OK`**:
-  ```json
-  {
-    "already_billed": false,
-    "appointment": { ... },
-    "consultation_fee": 500,
-    "medicine_charges": 740,
-    "prescription_items": [ ... ],
-    "suggested_total": 1240
-  }
-  ```
+- **Response `200 OK`**: Itemized preview of consultation fee and medicine charges.
 
 ### `POST /api/bills`
-Generates a patient invoice. Enforces strictly one bill per appointment.
-- **Roles**: `receptionist`, `admin`
+- **SRS Requirement**: **FR-6.1**, **FR-6.2**
+- **Roles**: `receptionist`
 - **Request Body**:
   ```json
   {
-    "appointment_id": 12,
-    "other_charges": 50,
-    "status": "Paid",
-    "payment_mode": "upi"
+    "appointment_id": 5,
+    "other_charges": 50.00,
+    "status": "Pending"
   }
   ```
-- **Response `201 Created`**:
-  ```json
-  {
-    "bill_id": 6,
-    "patient_id": 1,
-    "appointment_id": 12,
-    "consultation_fee": 500,
-    "medicine_charges": 740,
-    "other_charges": 50,
-    "total": 1290,
-    "status": "Paid",
-    "payment_mode": "upi",
-    "date": "2026-10-20"
-  }
-  ```
-- **Response `400 Bad Request`**: If the appointment has not reached `Completed` status.
-- **Response `409 Conflict`**: If a bill has already been created for this appointment.
-
-### `PUT /api/bills/:id`
-Edits `other_charges` while the bill status is `Pending`. Automatically recalculates `medicine_charges` and `total` from dispensed prescription items.
-- **Roles**: `receptionist`, `admin`
-- **Request Body**: `{ "other_charges": 60 }`
-- **Response `200 OK`**: Updated bill object.
-- **Response `400 Bad Request`**: If bill is already `Paid` (locked amounts).
-
-### `PATCH /api/bills/:id/pay`
-Records payment for an outstanding pending bill, performs final recalculation of medicine charges, and permanently locks all amounts.
-- **Roles**: `receptionist`, `admin`
-- **Request Body**: `{ "payment_mode": "cash" }`
-- **Response `200 OK`**: Updated bill object with `status: "Paid"`.
-- **Response `400 Bad Request`**: If already `Paid`.
+- **Response `201 Created`**: Bill object with computed `total`.
 
 ### `GET /api/bills/:id`
-Retrieves detailed bill and itemized dispensed prescription lines. If status is `Pending`, dynamically recalculates medicine charges before responding.
-- **Roles**: Authenticated users
+- **SRS Requirement**: **FR-6.1**, **FR-6.2**
+- **Roles**: `receptionist`, `admin`
+- **Description**: While `status = "Pending"`, viewing dynamically recalculates `medicine_charges` from dispensed prescriptions.
+- **Response `200 OK`**: Bill details with line items.
+
+### `PUT /api/bills/:id`
+- **SRS Requirement**: **FR-6.1**
+- **Roles**: `receptionist`
+- **Description**: Updates `other_charges` while bill is `Pending`. If bill is `Paid`, returns `400 Bad Request` (amounts locked).
+- **Request Body**: `{ "other_charges": 75.00 }`
+- **Response `200 OK`**: Updated bill object.
+
+### `PATCH /api/bills/:id/pay`
+- **SRS Requirement**: **FR-6.2**
+- **Roles**: `receptionist`
+- **Request Body**: `{ "payment_mode": "cash" | "card" | "upi" }`
+- **Response `200 OK`**: Updated bill with `status = "Paid"` and permanent financial lock.
 
 ### `GET /api/bills/:id/pdf`
-Generates and downloads a formal hospital PDF invoice receipt.
-- **Roles**: Authenticated users
-- **Response `200 OK`**: Binary stream with `Content-Type: application/pdf`.
+- **SRS Requirement**: **FR-6.3**
+- **Roles**: `receptionist`, `admin`
+- **Response `200 OK`**: Streaming binary `application/pdf` invoice with hospital branding.
+
+### `GET /api/bills/patient/:patient_id`
+- **SRS Requirement**: **FR-6.4**
+- **Roles**: `receptionist`, `admin`
+- **Response `200 OK`**: Chronological billing history and receipts for the specified patient.
+
+### `GET /api/bills`
+- **SRS Requirement**: **FR-6.4**
+- **Roles**: `receptionist`, `admin`
+- **Query Parameters**:
+  - `status` (optional): `Paid` or `Pending`.
+- **Response `200 OK`**: Filterable hospital bill ledger.
 
 ---
 
-## 8. Dashboard & Reports
+## 8. Dashboards & Periodic Analytics (FR-8.1 – FR-8.2)
 
 ### `GET /api/reports/dashboard`
-Returns live role-tailored KPI counters.
-- **Roles**: All authenticated roles
-- **Response `200 OK`**: JSON metrics based on caller's role.
+- **SRS Requirement**: **FR-8.1**
+- **Roles**: `admin` (also provides tailored subsets for other roles)
+- **Response `200 OK`**:
+  ```json
+  {
+    "counts": { "patients": 45, "doctors": 8 },
+    "today": { "appointments_total": 12, "appointments_completed": 7 },
+    "financial": { "total_revenue": 14500.00 },
+    "pharmacy": { "low_stock": 3 }
+  }
+  ```
 
 ### `GET /api/reports/appointments`
-Returns appointment summary, completion rates, doctor breakdown, and daily trend.
-- **Roles**: `admin`, `receptionist`
-- **Query Parameters**: `from_date`, `to_date`, `doctor_id`, `status`
-- **Response `200 OK`**: Summary and breakdown objects.
-
-### `GET /api/reports/appointments/csv`
-Downloads appointment report as RFC 4180 CSV spreadsheet.
-- **Roles**: `admin`, `receptionist`
-- **Response `200 OK`**: `Content-Type: text/csv`.
+- **SRS Requirement**: **FR-8.2**
+- **Roles**: `admin`
+- **Query Parameters**:
+  - `period` (optional): `daily`, `weekly`, or `monthly`.
+  - `from_date` / `to_date` (optional, `YYYY-MM-DD`): Custom date range filter.
+- **Response `200 OK`**:
+  ```json
+  {
+    "summary": { "total": 24, "completed": 19, "cancelled": 3, "no_show": 2 },
+    "by_status": [ ... ],
+    "by_doctor": [ ... ]
+  }
+  ```
 
 ### `GET /api/reports/revenue`
-Returns financial metrics, payment mode distribution (`cash`, `card`, `upi`), and daily revenue trends.
-- **Roles**: `admin`, `receptionist`
-- **Query Parameters**: `from_date`, `to_date`, `payment_mode`
+- **SRS Requirement**: **FR-8.2**
+- **Roles**: `admin`
+- **Query Parameters**:
+  - `period` (optional): `daily`, `weekly`, or `monthly`.
+  - `from_date` / `to_date` (optional, `YYYY-MM-DD`): Custom date range filter.
+- **Response `200 OK`**:
+  ```json
+  {
+    "summary": { "total_revenue": 14500.00, "paid_bills": 18 },
+    "by_payment_mode": [ ... ],
+    "daily_breakdown": [ ... ]
+  }
+  ```
 
-### `GET /api/reports/revenue/csv`
-Downloads revenue report as RFC 4180 CSV spreadsheet.
-- **Roles**: `admin`, `receptionist`
-- **Response `200 OK`**: `Content-Type: text/csv`.
+---
+
+## 9. Additional Features Beyond the SRS
+
+The following endpoints and capabilities deliver advanced clinical, operational, and user experience features exceeding the baseline SRS requirements:
 
 ### `GET /api/reports/doctor-performance`
-Returns consultation volume, completion percentage, and revenue generated per doctor.
+- **Feature**: Doctor Performance Clinical & Financial Analytics
 - **Roles**: `admin`
-- **Query Parameters**: `from_date`, `to_date`
+- **Description**: Returns doctor-by-doctor comparative analytics including completed consultation count, consultation completion rate percentage, consultation revenue collected, and associated pharmacy prescription revenue generated.
+- **Response `200 OK`**:
+  ```json
+  [
+    {
+      "doctor_id": 1,
+      "name": "Dr. Sarah Jenkins",
+      "specialization": "General Medicine",
+      "total_appointments": 15,
+      "completed_appointments": 14,
+      "completion_rate": 93.3,
+      "consultation_revenue": 7700.00,
+      "pharmacy_revenue": 2450.00
+    }
+  ]
+  ```
+
+### `GET /api/reports/appointments/csv`
+- **Feature**: RFC-4180 Appointments Spreadsheet Export
+- **Roles**: `admin`
+- **Response `200 OK`**: Streaming CSV file with headers: `Appointment ID, Date, Time Slot, Status, Patient Name, Patient Phone, Doctor Name, Specialization`. Includes `Content-Disposition: attachment; filename="appointments_report_...csv"`.
+
+### `GET /api/reports/revenue/csv`
+- **Feature**: RFC-4180 Financial Revenue Statement Export
+- **Roles**: `admin`
+- **Response `200 OK`**: Streaming CSV file with headers: `Bill ID, Appointment ID, Date, Patient Name, Doctor Name, Consultation Fee, Medicine Charges, Other Charges, Total, Status, Payment Mode`.
+
+### Editable Other Charges on Pending Bills
+- **Feature**: Pending Bill Adjustment
+- **Endpoint**: `PUT /api/bills/:id`
+- **Description**: Receptionists can adjust incidental hospital fees on pending invoices (e.g. specialized dressing, diagnostics) prior to settlement. The total recalculates dynamically and locks irrevocably upon marking `Paid`.
+
+### Stock Status Badges (Out of Stock)
+- **Feature**: Depleted Inventory Indicator
+- **UI Component**: Frontend `Pharmacy.jsx`
+- **Description**: Visual badge differentiating critical stock depletion (`quantity = 0`, badge `Out of Stock`) from threshold warning stock (`0 < quantity <= threshold`, badge `Low Stock`).
+
+### Login Quick-Fill Buttons
+- **Feature**: Instant Role-Switching Demo Helper
+- **UI Component**: Frontend `Login.jsx`
+- **Description**: Accessible one-click credential buttons for `Admin`, `Doctor`, `Receptionist`, and `Pharmacist` enabling rapid verification across role-specific views during evaluation.
