@@ -24,7 +24,7 @@ services:
 
   # 2. React Vite Frontend Static Site
   - type: web
-    name: hms-frontend
+    name: hospital-management-suite
     env: static
     rootDir: frontend
     buildCommand: npm install && npm run build
