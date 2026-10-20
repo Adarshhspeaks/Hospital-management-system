@@ -11,6 +11,7 @@ import Appointments from './pages/Appointments.jsx';
 import Pharmacy from './pages/Pharmacy.jsx';
 import Prescriptions from './pages/Prescriptions.jsx';
 import Billing from './pages/Billing.jsx';
+import Reports from './pages/Reports.jsx';
 
 export default function App() {
   return (
@@ -85,6 +86,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={['pharmacist', 'admin']}>
               <Prescriptions />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute roles={['admin', 'receptionist']}>
+              <Reports />
             </ProtectedRoute>
           }
         />

@@ -12,7 +12,7 @@ const MENUS = {
     { to: '/billing', label: 'Billing', ready: true },
     { to: '/pharmacy', label: 'Medicine stock', ready: true },
     { to: '/prescriptions', label: 'Prescriptions', ready: true },
-    { label: 'Reports', ready: false },
+    { to: '/reports', label: 'Reports', ready: true },
   ],
   receptionist: [
     { to: '/', label: 'Dashboard', ready: true },
@@ -20,6 +20,7 @@ const MENUS = {
     { to: '/appointments', label: 'Appointments', ready: true },
     { to: '/doctors', label: 'Doctors', ready: true },
     { to: '/billing', label: 'Billing', ready: true },
+    { to: '/reports', label: 'Reports', ready: true },
   ],
   doctor: [
     { to: '/', label: 'Dashboard', ready: true },

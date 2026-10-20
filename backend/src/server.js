@@ -23,8 +23,7 @@ app.use('/api/medicines', require('./routes/medicines'));
 app.use('/api/records', require('./routes/records'));
 app.use('/api/prescriptions', require('./routes/prescriptions'));
 app.use('/api/bills', require('./routes/bills'));
-
-// Later steps plug in here: reports
+app.use('/api/reports', require('./routes/reports'));
 
 app.use((_req, res) => res.status(404).json({ error: 'Route not found.' }));
 
