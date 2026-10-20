@@ -1,5 +1,8 @@
 # Hospital Management System (HMS)
 
+> 🚀 **Live Production Deployment**: [https://hms-frontend-7ovi.onrender.com](https://hms-frontend-7ovi.onrender.com)  
+> 🔑 **Quick Demo**: One-click login buttons available on the login page for **Admin**, **Doctor**, **Receptionist**, and **Pharmacist**.
+
 A complete, full-stack Hospital Management System built strictly according to Software Engineering SRS specifications and software design patterns.
 
 Built with **React 18 (Vite)**, **Node.js / Express**, and **PostgreSQL 16/18**.
