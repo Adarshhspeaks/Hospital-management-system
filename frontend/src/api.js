@@ -7,9 +7,17 @@ export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
 function getApiBase() {
   const envUrl = import.meta.env.VITE_API_URL;
-  if (!envUrl) return '';
-  const trimmed = envUrl.trim().replace(/\/$/, '');
-  if (!trimmed) return '';
+  let trimmed = (envUrl || '').trim().replace(/\/$/, '');
+  if (!trimmed) {
+    if (typeof window !== 'undefined' && window.location.hostname.endsWith('.onrender.com')) {
+      return 'https://hms-backend-3i51.onrender.com';
+    }
+    return '';
+  }
+  // If Render passed an internal service name without domain (e.g. "hms-backend-3i51"), append ".onrender.com"
+  if (!trimmed.includes('.') && !trimmed.startsWith('localhost')) {
+    trimmed = `${trimmed}.onrender.com`;
+  }
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return `https://${trimmed}`;
 }
